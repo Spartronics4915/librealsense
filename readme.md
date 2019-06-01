@@ -1,4 +1,7 @@
-<p align="center"><img src="doc/img/realsense.png" width="70%" /><br><h1>Modified to cross compile for the RoboRIO</h1><br><h3><em>by team 4915</em></p>
+<p align="center"><img src="doc/img/realsense.png" width="70%" /><br><br></p>
+
+<h3 align="center">Modified to cross compile for the RoboRIO by FRC team Spartronics 4915</h3>
+<h4 align="center">This is based off of librealsense v2.22.0. Run <code>cross_compile.sh</code> to get started.</h4>
 
 -----------------
 
