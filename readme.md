@@ -1,4 +1,4 @@
-<p align="center"><img src="doc/img/realsense.png" width="70%" /><br><br></p>
+<p align="center"><img src="doc/img/realsense.png" width="70%" /><br><h1>Modified to cross compile for the RoboRIO</h1><br><h3><em>by team 4915</em></p>
 
 -----------------
 
