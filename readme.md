@@ -2,6 +2,7 @@
 
 <h3 align="center">Modified to cross compile for the RoboRIO by FRC team Spartronics 4915</h3>
 <h4 align="center">This is based off of librealsense v2.22.0. Run <code>cross_compile.sh</code> to get started.</h4>
+<h5 align="center">(Note: you have to do <code>./gradlew installToolchain</code> somewhere with a valid Gradle wrapper)</h5>
 
 -----------------
 
