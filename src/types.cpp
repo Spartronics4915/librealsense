@@ -180,6 +180,9 @@ namespace librealsense
             CASE(POSE)
             CASE(POSE_SENSOR)
             CASE(WHEEL_ODOMETER)
+            CASE(UPDATABLE)
+            CASE(UPDATE_DEVICE)
+            CASE(GLOBAL_TIMER)
         default: assert(!is_valid(value)); return UNKNOWN_VALUE;
         }
 #undef CASE
@@ -272,6 +275,7 @@ namespace librealsense
             CASE(LLD_TEMPERATURE)
             CASE(MC_TEMPERATURE)
             CASE(MA_TEMPERATURE)
+            CASE(APD_TEMPERATURE)
             CASE(HARDWARE_PRESET)
             CASE(GLOBAL_TIME_ENABLED)
         default: assert(!is_valid(value)); return UNKNOWN_VALUE;
@@ -341,7 +345,9 @@ namespace librealsense
             CASE(ADVANCED_MODE)
             CASE(PRODUCT_ID)
             CASE(CAMERA_LOCKED)
+            CASE(PRODUCT_LINE)
             CASE(USB_TYPE_DESCRIPTOR)
+            CASE(ASIC_SERIAL_NUMBER)
         default: assert(!is_valid(value)); return UNKNOWN_VALUE;
         }
 #undef CASE

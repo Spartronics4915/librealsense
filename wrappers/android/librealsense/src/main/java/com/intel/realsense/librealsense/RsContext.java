@@ -11,6 +11,10 @@ public class RsContext extends LrsClass{
             mDeviceWatcher = new DeviceWatcher(context);
     }
 
+    public static String getVersion(){
+        return nGetVersion();
+    }
+
     /**
      * @deprecated use {@link #queryDevices()} instead.
      */
@@ -20,7 +24,11 @@ public class RsContext extends LrsClass{
     }
 
     public DeviceList queryDevices() {
-        return new DeviceList(nQueryDevices(mHandle));
+        return queryDevices(ProductLine.ANY_INTEL);
+    }
+
+    public DeviceList queryDevices(ProductLine productLine) {
+        return new DeviceList(nQueryDevices(mHandle, productLine.value()));
     }
 
     public synchronized void setDevicesChangedCallback(DeviceListener listener) {
@@ -45,6 +53,7 @@ public class RsContext extends LrsClass{
     }
 
     private static native long nCreate();
-    private static native long nQueryDevices(long handle);
+    private static native String nGetVersion();
+    private static native long nQueryDevices(long handle, int mask);
     private static native void nDelete(long handle);
 }

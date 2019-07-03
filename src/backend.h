@@ -96,7 +96,7 @@ namespace librealsense
         {
         public:
             virtual double get_time() const = 0;
-            ~time_service() = default;
+            virtual ~time_service() = default;
         };
 
         class os_time_service: public time_service
@@ -110,7 +110,7 @@ namespace librealsense
 
         struct guid { uint32_t data1; uint16_t data2, data3; uint8_t data4[8]; };
         // subdevice and node fields are assigned by Host driver; unit and GUID are hard-coded in camera firmware
-        struct extension_unit { int subdevice, unit, node; guid id; };
+        struct extension_unit { int subdevice; uint8_t unit; int node; guid id; };
 
         enum power_state
         {
@@ -152,9 +152,17 @@ namespace librealsense
             uint32_t        timestamp;
             uint8_t         source_clock[6];
         };
+
+        struct hid_header
+        {
+            uint8_t         length;             // HID report total size. Limited to 255
+            uint8_t         report_type;        // Curently supported: IMU/Custom Temperature
+            uint64_t        timestamp;          // Driver-produced/FW-based timestamp. Note that currently only the lower 32bit are used
+        };
 #pragma pack(pop)
 
         constexpr uint8_t uvc_header_size = sizeof(uvc_header);
+        constexpr uint8_t hid_header_size = sizeof(hid_header);
 
         struct frame_object
         {

@@ -19,7 +19,7 @@ namespace librealsense
     {
         // L500 depth XU identifiers
         const uint8_t L500_HWMONITOR = 1;
-        const uint8_t L500_DEPTH_LASER_POWER = 2;
+        const uint8_t L500_DEPTH_VISUAL_PRESET = 2;
         const uint8_t L500_ERROR_REPORTING = 3;
 
         const platform::extension_unit depth_xu = { 0, 3, 2,
@@ -43,7 +43,8 @@ namespace librealsense
         enum gvd_fields
         {
             fw_version_offset = 12,
-            module_serial_offset = 56,
+            module_serial_offset = 56, 
+            module_asic_serial_offset = 72,
             module_serial_size = 8
         };
 

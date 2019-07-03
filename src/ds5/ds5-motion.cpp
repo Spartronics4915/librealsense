@@ -255,7 +255,9 @@ namespace librealsense
         std::string motion_module_fw_version = "";
         if (_fw_version >= firmware_version("5.5.8.0"))
         {
-            motion_module_fw_version = _hw_monitor->get_firmware_version_string(GVD, motion_module_fw_version_offset);
+            std::vector<uint8_t> gvd_buff(HW_MONITOR_BUFFER_SIZE);
+            _hw_monitor->get_gvd(gvd_buff.size(), gvd_buff.data(), GVD);
+            motion_module_fw_version = _hw_monitor->get_firmware_version_string(gvd_buff, camera_fw_version_offset);
         }
 
         initialize_fisheye_sensor(ctx,group);
@@ -296,7 +298,7 @@ namespace librealsense
                 };
             }
             catch (const std::exception& ex){
-                LOG_INFO("Motion Module extrinsic calibration  is not available, report: " << ex.what());
+                LOG_INFO("Motion Module - no extrinsic calibration, " << ex.what());
             }
 
             try
@@ -311,14 +313,17 @@ namespace librealsense
             }
             catch (const std::exception& ex)
             {
-                LOG_INFO("Motion Module intrinsic calibration is not available, report: " << ex.what());
+                LOG_INFO("Motion Module - no intrinsic calibration, " << ex.what());
 
                 // transform IMU axes if supported
                 hid_ep->register_on_before_frame_callback(align_imu_axes);
             }
 
-            if (!motion_module_fw_version.empty())
+            if ((!motion_module_fw_version.empty()) && ("255.255.255.255" != motion_module_fw_version))
                 register_info(RS2_CAMERA_INFO_FIRMWARE_VERSION, motion_module_fw_version);
+
+            // HID metadata attributes
+            hid_ep->register_metadata(RS2_FRAME_METADATA_FRAME_TIMESTAMP, make_hid_header_parser(&platform::hid_header::timestamp));
         }
     }
 

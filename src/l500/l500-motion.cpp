@@ -131,6 +131,8 @@ namespace librealsense
         if (hid_ep)
         {
             _motion_module_device_idx = add_sensor(hid_ep);
+            // HID metadata attributes
+            hid_ep->register_metadata(RS2_FRAME_METADATA_FRAME_TIMESTAMP, make_hid_header_parser(&platform::hid_header::timestamp));
         }
     }
 
