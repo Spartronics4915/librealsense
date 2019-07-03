@@ -27,8 +27,8 @@
 #define SYNC_TIME_DIFF_MSEC 1
 #define MAX_6DOF_TIMEDIFF_MSEC 5 /* 6dof must arrive every 5 msec */
 #define WAIT_FOR_STOP_STATUS_MSEC 200 /* Time to wait before closing interrupt/event threads - give opportunity for the FW to send the DEVICE_STOPPED status */
-#define MAX_FRAME_HEIGHT 1080
-#define MAX_FRAME_WIDTH 1920
+#define MAX_FRAME_HEIGHT 0 // Reading fisheye streams is *not supported* on the roborio!! Buffers take up too much memory
+#define MAX_FRAME_WIDTH 0
 #define MAX_BIG_DATA_MESSAGE_LENGTH 10250 //(10K + large message header size) 
 #define FRAMES_PER_STREAM 100
 #define PERMANENT_LOCK_CONFIGURATION_TOKEN 0xDEAD10CC

@@ -12,8 +12,10 @@ macro(os_set_flags)
     elseif(${MACHINE} MATCHES "aarch64-linux-gnu")
         set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -mstrict-align -ftree-vectorize")
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mstrict-align -ftree-vectorize")
-    elseif(${MACHINE} MATCHES "arm-frc2019-linux-gnueabi")
-        message("Not doing anything for frc2019")
+    elseif(${MACHINE} MATCHES "arm-frc20[0-9][0-9]-linux-gnueabi") # CMake doesn't support token reptitions in regexes
+	# XXX: This probably isn't the most appropriate place to set optimization/stripping flags
+        set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -mfpu=neon -mfloat-abi=softfp -ftree-vectorize -fPIC -O3 -s")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mfpu=neon -mfloat-abi=softfp -ftree-vectorize -fPIC -O3 -s")
     else()
         set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -mssse3")
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mssse3")

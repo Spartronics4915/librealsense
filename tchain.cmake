@@ -9,7 +9,7 @@ set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR arm)
 
 set(CMAKE_SYSROOT ${ToolchainDir}/${ToolchainName})
-set(CMAKE_STAGING_PREFIX /tmp/roborio_stage)
+set(CMAKE_STAGING_PREFIX ${ToolchainDir}/${ToolchainName})
 
 set(CMAKE_C_COMPILER ${BinaryPrefix}-gcc)
 set(CMAKE_CXX_COMPILER ${BinaryPrefix}-g++)
@@ -24,7 +24,3 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
-
-execute_process(COMMAND ${CMAKE_C_COMPILER} -dumpversion OUTPUT_VARIABLE GccVersion)
-string(STRIP ${GccVersion} GccVersion)
-include_directories(AFTER ${ToolchainDir}/${ToolchainName}/usr/lib/gcc/${ToolchainName}/${GccVersion}/plugin/include/)
