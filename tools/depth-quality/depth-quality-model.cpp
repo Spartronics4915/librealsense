@@ -162,6 +162,9 @@ namespace rs2
 
         bool tool_model::draw_instructions(ux_window& win, const rect& viewer_rect, bool& distance, bool& orientation)
         {
+            if (_viewer_model.paused)
+                return false;
+
             auto plane_fit_found = is_valid(_metrics_model.get_plane());
             _metrics_model.set_plane_fit(plane_fit_found);
             _roi_located.add_value(plane_fit_found);
@@ -625,7 +628,18 @@ namespace rs2
                             ImGui::SetTooltip("Estimated distance to an average within the ROI of the target (wall) in mm");
                         }
                         ImGui::SameLine(); ImGui::SetCursorPosX(col1);
-                        ImGui::Text("%.2f mm", _metrics_model.get_last_metrics().distance);
+
+                        static float prev_metric_distance = 0;
+                        if (_viewer_model.paused)
+                        {
+                            ImGui::Text("%.2f mm", prev_metric_distance);
+                        }
+                        else
+                        {
+                            auto curr_metric_distance = _metrics_model.get_last_metrics().distance;
+                            ImGui::Text("%.2f mm", curr_metric_distance);
+                            prev_metric_distance = curr_metric_distance;
+                        }
 
                         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 5);
 
@@ -668,7 +682,17 @@ namespace rs2
                             ImGui::SetTooltip("Estimated angle to the wall in degrees");
                         }
                         ImGui::SameLine(); ImGui::SetCursorPosX(col1);
-                        ImGui::Text("%.2f deg", _metrics_model.get_last_metrics().angle);
+                        static float prev_metric_angle = 0;
+                        if (_viewer_model.paused)
+                        {
+                            ImGui::Text("%.2f mm", prev_metric_angle);
+                        }
+                        else
+                        {
+                            auto curr_metric_angle = _metrics_model.get_last_metrics().angle;
+                            ImGui::Text("%.2f mm", curr_metric_angle);
+                            prev_metric_angle = curr_metric_angle;
+                        }
 
                         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 5);
                         ImGui::TreePop();
@@ -1160,14 +1184,17 @@ namespace rs2
             {
 
                 // Snapshot the color-augmented version of the frame
-                if (auto colorized_frame = _colorize.colorize(frame).as<video_frame>())
+                if (auto df = frame.as<depth_frame>())
                 {
+                    if (auto colorized_frame = _colorize.colorize(frame).as<video_frame>())
+                    {
 
-                    auto stream_desc = rs2_stream_to_string(colorized_frame.get_profile().stream_type());
-                    auto filename_png = filename_base + "_" + stream_desc + "_" + fn.str() + ".png";
-                    save_to_png(filename_png.data(), colorized_frame.get_width(), colorized_frame.get_height(), colorized_frame.get_bytes_per_pixel(),
-                        colorized_frame.get_data(), colorized_frame.get_width() * colorized_frame.get_bytes_per_pixel());
+                        auto stream_desc = rs2_stream_to_string(colorized_frame.get_profile().stream_type());
+                        auto filename_png = filename_base + "_" + stream_desc + "_" + fn.str() + ".png";
+                        save_to_png(filename_png.data(), colorized_frame.get_width(), colorized_frame.get_height(), colorized_frame.get_bytes_per_pixel(),
+                            colorized_frame.get_data(), colorized_frame.get_width() * colorized_frame.get_bytes_per_pixel());
 
+                    }
                 }
                 auto original_frame = frame.as<video_frame>();
 
@@ -1206,8 +1233,13 @@ namespace rs2
                     }
                 }
 
-                if (ply_texture )
-                    export_to_ply(filename_base + "_" + fn.str() + "_3d_mesh.ply", _viewer_model.not_model, frames, ply_texture, false);
+                if (ply_texture)
+                {
+                    auto fname = filename_base + "_" + fn.str() + "_3d_mesh.ply";
+                    std::unique_ptr<rs2::filter> exporter;
+                    exporter = std::unique_ptr<rs2::filter>(new rs2::save_to_ply(fname));
+                    export_frame(fname, std::move(exporter), _viewer_model.not_model, frames, false);
+                }
             }
         }
 

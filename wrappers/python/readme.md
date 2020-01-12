@@ -9,7 +9,9 @@
 
 > **Note:**
 >
->[`pyrealsense`](https://github.com/toinsson/pyrealsense) AKA [`pyrealsense/2.0`](https://pypi.python.org/pypi/pyrealsense/2.0) is a community supported Python wrapper for **librealsense v1.12.1**, This wrapper does not support newer versions and **does not work with the RealSense SDK 2.0**.
+>[`pyrealsense`](https://github.com/toinsson/pyrealsense) AKA [`pyrealsense/2.0`](https://pypi.python.org/pypi/pyrealsense/2.0) is a community supported Python wrapper for the legacy **librealsense v1.12.1**. This wrapper does not support newer versions and **does not work with the RealSense SDK 2.0**.
+>
+> HOWEVER: The [`pyrealsense2`](https://pypi.org/project/pyrealsense2/) package is our official wrapper which **does** support SDK 2.0
 
 We provide a PyPI distribution which is created from this folder by running `python setup.py bdist_wheel`.
 
@@ -30,10 +32,10 @@ Windows users can install the RealSense SDK 2.0 from the release tab to get pre-
 2. Install Python and its development files via apt-get (Python 2 and 3 both work)
   * `sudo apt-get install python python-dev` or `sudo apt-get install python3 python3-dev`
   * **Note:** The project will only use Python 2 if it can't use Python 3
-3. Run the top level CMake command with the following additional flag `-DBUILD_PYTHON_BINDINGS=bool:true`:
+3. Run the top level CMake command with the following additional flag `-DBUILD_PYTHON_BINDINGS:bool=true`:
   * `mkdir build`
   * `cd build`
-  * `cmake ../ -DBUILD_PYTHON_BINDINGS=bool:true`
+  * `cmake ../ -DBUILD_PYTHON_BINDINGS:bool=true`
 > **Note**: To force compilation with a specific version on a system with both Python 2 and Python 3 installed, add the following flag to CMake command:
 `-DPYTHON_EXECUTABLE=[full path to the exact python executable]`
   * `make -j4`

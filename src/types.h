@@ -41,9 +41,9 @@
 #include <utility>                          // For std::forward
 #include <limits>
 #include <iomanip>
-
 #include "backend.h"
 #include "concurrency.h"
+
 #if BUILD_EASYLOGGINGPP
 #include "../third-party/easyloggingpp/src/easylogging++.h"
 #endif // BUILD_EASYLOGGINGPP
@@ -69,6 +69,20 @@ template<typename T> T rad2deg(T val) { return T(val * r2d); }
 
 namespace librealsense
 {
+#pragma pack (push, 1)
+
+    struct hid_data
+    {
+        short x;
+        byte reserved1[2];
+        short y;
+        byte reserved2[2];
+        short z;
+        byte reserved3[2];
+    };
+
+#pragma pack(pop)
+
     static const double TIMESTAMP_USEC_TO_MSEC = 0.001;
 
     ///////////////////////////////////
@@ -81,29 +95,71 @@ namespace librealsense
         operator std::string() const { return ss.str(); }
     };
 
-    template<typename T, size_t size>
-    inline size_t copy_array(T(&dst)[size], const T(&src)[size])
+    template<typename T>
+    constexpr size_t arr_size(T const&) { return 1; }
+
+    template<typename T, size_t sz>
+    constexpr size_t arr_size(T(&arr)[sz])
     {
-        assert(dst != nullptr && src != nullptr);
-        for (size_t i = 0; i < size; i++)
-        {
-            dst[i] = src[i];
-        }
-        return size;
+        return sz * arr_size(arr[0]);
     }
 
-    template<typename T, size_t sizem, size_t sizen>
-    inline size_t copy_2darray(T(&dst)[sizem][sizen], const T(&src)[sizem][sizen])
+    template<typename T, size_t sz>
+    constexpr size_t arr_size_bytes(T(&arr)[sz])
     {
-        assert(dst != nullptr && src != nullptr);
-        for (size_t i = 0; i < sizem; i++)
+        return arr_size(arr) * sizeof(T);
+    }
+
+    template<typename T>
+    std::string array2str(T& data)
+    {
+        std::stringstream ss;
+        for (auto i = 0; i < arr_size(data); i++)
+            ss << " [" << i << "] = " << data[i] << "\t";
+        return ss.str();
+    }
+
+    // Auxillary function for compiler to highlight the invoking user code
+    template <typename T, typename S>
+    struct isNarrowing { static bool constexpr value = std::numeric_limits<S>::max() > std::numeric_limits<T>::max(); };
+
+    template<const bool force_narrowing=false, typename T, typename S, size_t size_tgt, size_t size_src>
+    inline size_t copy_array(T(&dst)[size_tgt], const S(&src)[size_src])
+    {
+        static_assert((size_tgt && (size_tgt == size_src)), "copy_array requires similar non-zero size for target and source containers");
+        static_assert((std::is_arithmetic<S>::value) && (std::is_arithmetic<T>::value), "copy_array supports arithmetic types only");
+        if (!force_narrowing && isNarrowing<T, S>::value)
         {
-            for (size_t j = 0; j < sizen; j++)
+            static_assert(!(isNarrowing<T, S>::value && !force_narrowing), "Passing narrowing conversion to copy_array requires setting the force flag on");
+        }
+
+        assert(dst != nullptr && src != nullptr);
+        for (size_t i = 0; i < size_tgt; i++)
+        {
+            dst[i] = static_cast<T>(src[i]);
+        }
+        return size_tgt;
+    }
+
+    template<const bool force_narrowing=false, typename T, typename S, size_t tgt_m, size_t tgt_n, size_t src_m, size_t src_n>
+    inline size_t copy_2darray(T(&dst)[tgt_m][tgt_n], const S(&src)[src_m][src_n])
+    {
+        static_assert((src_m && src_n && (tgt_n == src_n) && (tgt_m == src_m)), "copy_array requires similar non-zero size for target and source containers");
+        static_assert((std::is_arithmetic<S>::value) && (std::is_arithmetic<T>::value), "copy_2darray supports arithmetic types only");
+        if (isNarrowing<T, S>::value && !force_narrowing)
+        {
+            static_assert(!(isNarrowing<T, S>::value && !force_narrowing), "Passing narrowing conversion to copy_2darray requires setting the force flag on");
+        }
+
+        assert(dst != nullptr && src != nullptr);
+        for (size_t i = 0; i < src_m; i++)
+        {
+            for (size_t j = 0; j < src_n; j++)
             {
-                dst[i][j] = src[i][j];
+                dst[i][j] = static_cast<T>(src[i][j]);
             }
         }
-        return sizem * sizen;
+        return src_m * src_n;
     }
 
     // Comparing parameter against a range of values of the same type
@@ -191,6 +247,11 @@ namespace librealsense
 #endif
     }
 
+#ifdef BUILD_INTERNAL_UNIT_TESTS
+#define PRIVATE_TESTABLE public
+#else
+#define PRIVATE_TESTABLE private
+#endif
     //////////////////////////
     // Exceptions mechanism //
     //////////////////////////
@@ -432,27 +493,6 @@ namespace librealsense
         unique_id& operator=(const unique_id&) = delete;
     };
 
-    template<typename T, int sz>
-    int arr_size(T(&)[sz])
-    {
-        return sz;
-    }
-
-    template<typename T, int sz>
-    int arr_size_bytes(T(&)[sz])
-    {
-        return sz*sizeof(T);
-    }
-
-    template<typename T>
-    std::string array2str(T& data)
-    {
-        std::stringstream ss;
-        for (auto i = 0; i < arr_size(data); i++)
-            ss << " [" << i << "] = " << data[i] << "\t";
-        return ss.str();
-    }
-
     typedef float float_4[4];
 
     /////////////////////////////
@@ -580,13 +620,29 @@ namespace librealsense
     typedef std::tuple<uint32_t, int, size_t> native_pixel_format_tuple;
     typedef std::tuple<rs2_stream, int, rs2_format> output_tuple;
     typedef std::tuple<platform::stream_profile_tuple, native_pixel_format_tuple, std::vector<output_tuple>> request_mapping_tuple;
+    
+    struct resolution
+    {
+        uint32_t width, height;
+    };
+    using resolution_func = std::function<resolution(resolution res)>;
 
     struct stream_profile
     {
+        stream_profile(rs2_format fmt = RS2_FORMAT_ANY,
+            rs2_stream strm = RS2_STREAM_ANY,
+            int idx = 0,
+            uint32_t w = 0, uint32_t h = 0,
+            uint32_t framerate = 0,
+            resolution_func res_func = [](resolution res) { return res; }) :
+            format(fmt), stream(strm), index(idx), height(h), width(w), stream_resolution(res_func), fps(framerate)
+        {};
+
+        rs2_format format;
         rs2_stream stream;
         int index;
         uint32_t width, height, fps;
-        rs2_format format;
+        resolution_func stream_resolution; // Calculates the relevant resolution from the given backend resolution.
     };
 
 
@@ -601,6 +657,14 @@ namespace librealsense
             (a.stream == b.stream);
     }
 
+    inline bool operator<(const stream_profile & lhs,
+        const stream_profile & rhs)
+    {
+        if (lhs.format != rhs.format) return lhs.format < rhs.format;
+        if (lhs.index != rhs.index)   return lhs.index  < rhs.index;
+        return lhs.stream < rhs.stream;
+    }
+
     struct stream_descriptor
     {
         stream_descriptor() : type(RS2_STREAM_ANY), index(0) {}
@@ -609,13 +673,6 @@ namespace librealsense
         rs2_stream type;
         int index;
     };
-
-    struct resolution
-    {
-        uint32_t width, height;
-    };
-
-    using resolution_func = std::function<resolution(resolution res)>;
 
     struct stream_output {
         stream_output(stream_descriptor stream_desc_in,
@@ -634,7 +691,7 @@ namespace librealsense
     struct pixel_format_unpacker
     {
         bool requires_processing;
-        void(*unpack)(byte * const dest[], const byte * source, int width, int height);
+        void(*unpack)(byte * const dest[], const byte * source, int width, int height, int actual_size);
         std::vector<stream_output> outputs;
 
         platform::stream_profile get_uvc_profile(const stream_profile& request, uint32_t fourcc, const std::vector<platform::stream_profile>& uvc_profiles) const
@@ -701,51 +758,7 @@ namespace librealsense
 
     };
 
-    struct native_pixel_format
-    {
-        uint32_t fourcc;
-        int plane_count;
-        size_t bytes_per_pixel;
-        std::vector<pixel_format_unpacker> unpackers;
-
-        size_t get_image_size(int width, int height) const { return width * height * plane_count * bytes_per_pixel; }
-
-        operator native_pixel_format_tuple() const
-        {
-            return std::make_tuple(fourcc, plane_count, bytes_per_pixel);
-        }
-    };
-
     class stream_profile_interface;
-
-    struct request_mapping
-    {
-        platform::stream_profile profile;
-        native_pixel_format* pf;
-        pixel_format_unpacker* unpacker;
-
-        // The request lists is there just for lookup and is not involved in object comparison
-        mutable std::vector<std::shared_ptr<stream_profile_interface>> original_requests;
-
-        operator request_mapping_tuple() const
-        {
-            return std::make_tuple(profile, *pf, *unpacker);
-        }
-
-        bool requires_processing() const { return unpacker->requires_processing; }
-
-    };
-
-    inline bool operator< (const request_mapping& first, const request_mapping& second)
-    {
-        return request_mapping_tuple(first) < request_mapping_tuple(second);
-    }
-
-    inline bool operator==(const request_mapping& a,
-        const request_mapping& b)
-    {
-        return (a.profile == b.profile) && (a.pf == b.pf) && (a.unpacker == b.unpacker);
-    }
 
     class frame_interface;
 
@@ -1710,6 +1723,17 @@ namespace librealsense
         bool _valid;
         T _value;
     };
+
+}
+
+template<typename T>
+uint32_t rs_fourcc(const T a, const T b, const  T c, const T d)
+{
+    static_assert((std::is_integral<T>::value), "rs_fourcc supports integral built-in types only");
+    return ((static_cast<uint32_t>(a) << 24) |
+            (static_cast<uint32_t>(b) << 16) |
+            (static_cast<uint32_t>(c) << 8) |
+            (static_cast<uint32_t>(d) << 0));
 }
 
 namespace std {
@@ -1744,15 +1768,13 @@ namespace std {
     };
 
     template <>
-    struct hash<librealsense::request_mapping>
+    struct hash<rs2_format>
     {
-        size_t operator()(const librealsense::request_mapping& k) const
+        size_t operator()(const rs2_format& f) const
         {
             using std::hash;
 
-            return (hash<librealsense::platform::stream_profile>()(k.profile))
-                ^ (hash<librealsense::pixel_format_unpacker*>()(k.unpacker))
-                ^ (hash<librealsense::native_pixel_format*>()(k.pf));
+            return hash<uint32_t>()(f);
         }
     };
 }

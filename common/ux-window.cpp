@@ -25,6 +25,10 @@ namespace rs2
 {
     void prepare_config_file()
     {
+        config_file::instance().set_default(configurations::update::allow_rc_firmware, false);
+        config_file::instance().set_default(configurations::update::recommend_calibration, true);
+        config_file::instance().set_default(configurations::update::recommend_updates, true);
+
         config_file::instance().set_default(configurations::window::is_fullscreen, false);
         config_file::instance().set_default(configurations::window::saved_pos, false);
         config_file::instance().set_default(configurations::window::saved_size, false);
@@ -41,6 +45,10 @@ namespace rs2
 
         config_file::instance().set_default(configurations::performance::show_fps, false);
         config_file::instance().set_default(configurations::performance::vsync, true);
+
+        config_file::instance().set_default(configurations::ply::mesh, true);
+        config_file::instance().set_default(configurations::ply::use_normals, false);
+        config_file::instance().set_default(configurations::ply::encoding, configurations::ply::binary);
 
 #ifdef __APPLE__
         config_file::instance().set_default(configurations::performance::font_oversample, 8);

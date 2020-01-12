@@ -8,7 +8,6 @@ include(GNUInstallDirs)
 # include librealsense helper macros
 include(CMake/lrs_macros.cmake)
 include(CMake/version_config.cmake)
-include(CMake/lrs_options.cmake)
 
 if(ENABLE_CCACHE)
   find_program(CCACHE_FOUND ccache)
@@ -54,9 +53,8 @@ macro(global_set_flags)
         add_definitions(-DRS2_USE_CUDA)
     endif()
 
-    if(FORCE_LIBUVC)
-        set(BACKEND RS2_USE_LIBUVC_BACKEND)
-        message(STATUS "Using libuvc (by force)")
+    if (BUILD_INTERNAL_UNIT_TESTS)
+        add_definitions(-DBUILD_INTERNAL_UNIT_TESTS)
     endif()
 
     if (BUILD_WITH_CUDA)
