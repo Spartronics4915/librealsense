@@ -1,16 +1,21 @@
 #!/bin/sh
 
+echo "Cross compiling libusb using GNU autotools... (args: $1 $2 $3)"
+
 ./autogen.sh
 
-CROSS_COMPILE_PREFIX="/home/declan/.gradle/toolchains/frc/2019/roborio/bin/arm-frc2019-linux-gnueabi"
+BINARY_PREFIX="$1"
 
-export CC=$CROSS_COMPILE_PREFIX-gcc
-export CXX=$CROSS_COMPILE_PREFIX-g++
-export AR=$CROSS_COMPILE_PREFIX-ar
-export LD=$CROSS_COMPILE_PREFIX-ld
-export OBJCOPY=$CROSS_COMPILE_PREFIX-objcopy
-export OBJDUMP=$CROSS_COMPILE_PREFIX-objdump
-export SIZE=$CROSS_COMPILE_PREFIX-size
-export NM=$CROSS_COMPILE_PREFIX-nm
+export CC="$BINARY_PREFIX-gcc"
+export CXX="$BINARY_PREFIX-g++"
+export AR="$BINARY_PREFIX-ar"
+export LD="$BINARY_PREFIX-ld"
+export OBJCOPY="$BINARY_PREFIX-objcopy"
+export OBJDUMP="$BINARY_PREFIX-objdump"
+export SIZE="$BINARY_PREFIX-size"
+export NM="$BINARY_PREFIX-nm"
 
-./configure --host="arm-frc2019-linux-gnueabi" --prefix="/home/declan/.gradle/toolchains/frc/2019/roborio/arm-frc2019-linux-gnueabi/" --disable-udev
+./configure --host="$2" --prefix="$3/" --disable-udev
+
+make -j8
+make install
