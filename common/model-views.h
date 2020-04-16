@@ -22,6 +22,8 @@
 #include "imgui-fonts-karla.hpp"
 #include "imgui-fonts-fontawesome.hpp"
 #include "../third-party/json.hpp"
+#include "objects-in-frame.h"
+#include "processing-block-model.h"
 
 #include "realsense-ui-advanced-mode.h"
 #include "fw-update-helper.h"
@@ -56,7 +58,7 @@ static const ImVec4 yellowish = from_rgba(255, 253, 191, 255, true);
 static const ImVec4 green = from_rgba(0x20, 0xe0, 0x20, 0xff, true);
 static const ImVec4 dark_sensor_bg = from_rgba(0x1b, 0x21, 0x25, 170);
 static const ImVec4 red = from_rgba(233, 0, 0, 255, true);
-static const ImVec4 greenish = from_rgba(33, 104, 0, 255, 0xff);
+static const ImVec4 greenish = from_rgba(33, 104, 0, 255);
 
 // Helper class that lets smoothly animate between its values
 template<class T>
@@ -155,6 +157,7 @@ namespace rs2
         namespace viewer
         {
             static const char* is_3d_view          { "viewer_model.is_3d_view" };
+            static const char* ground_truth_r      { "viewer_model.ground_truth_r" };
             static const char* continue_with_ui_not_aligned { "viewer_model.continue_with_ui_not_aligned" };
             static const char* continue_with_current_fw{ "viewer_model.continue_with_current_fw" };
             static const char* settings_tab        { "viewer_model.settings_tab" };
@@ -169,6 +172,8 @@ namespace rs2
             static const char* show_map_ruler      { "viewer_model.show_map_ruler" };
             static const char* show_stream_details { "viewer_model.show_stream_details" };
             static const char* metric_system       { "viewer_model.metric_system" };
+
+            static const char* last_ip             { "viewer_model.last_ip" };
         }
         namespace window
         {
@@ -269,7 +274,8 @@ namespace rs2
         if (opt == RS2_OPTION_STREAM_FILTER ||
             opt == RS2_OPTION_STREAM_FORMAT_FILTER ||
             opt == RS2_OPTION_STREAM_INDEX_FILTER ||
-            opt == RS2_OPTION_FRAMES_QUEUE_SIZE)
+            opt == RS2_OPTION_FRAMES_QUEUE_SIZE ||
+            opt == RS2_OPTION_SENSOR_MODE)
             return true;
         return false;
     }
@@ -377,47 +383,6 @@ namespace rs2
 
     void save_processing_block_to_config_file(const char* name, 
         std::shared_ptr<rs2::processing_block> pb, bool enable = true);
-
-    class processing_block_model
-    {
-    public:
-        processing_block_model(subdevice_model* owner,
-            const std::string& name,
-            std::shared_ptr<rs2::filter> block,
-            std::function<rs2::frame(rs2::frame)> invoker,
-            std::string& error_message,
-            bool enabled = true);
-
-        const std::string& get_name() const { return _name; }
-
-        option_model& get_option(rs2_option opt);
-
-        rs2::frame invoke(rs2::frame f) const { return _invoker(f); }
-
-        void save_to_config_file();
-
-        std::vector<rs2_option> get_option_list()
-        {
-            return _block->get_supported_options();
-        }
-
-        void populate_options(const std::string& opt_base_label,
-            subdevice_model* model,
-            bool* options_invalidated,
-            std::string& error_message);
-
-        std::shared_ptr<rs2::filter> get_block() { return _block; }
-
-        bool enabled = true;
-        bool visible = true;
-    private:
-        std::shared_ptr<rs2::filter> _block;
-        std::map<int, option_model> options_metadata;
-        std::string _name;
-        std::string _full_name;
-        std::function<rs2::frame(rs2::frame)> _invoker;
-        subdevice_model* _owner;
-    };
 
     class syncer_model
     {
@@ -532,7 +497,6 @@ namespace rs2
         tm2_model() : _trajectory_tracking(true)
         {   
         }
-        void draw_controller_pose_object();
         void draw_trajectory(bool is_trajectory_button_pressed);
         void update_model_trajectory(const pose_frame& pose, bool track);
         void record_trajectory(bool on) { _trajectory_tracking = on; };
@@ -597,7 +561,7 @@ namespace rs2
             bool* options_invalidated,
             std::string& error_message);
 
-        subdevice_model(device& dev, std::shared_ptr<sensor> s, std::string& error_message, viewer_model& viewer);
+        subdevice_model(device& dev, std::shared_ptr<sensor> s, std::shared_ptr< atomic_objects_in_frame > objects, std::string& error_message, viewer_model& viewer);
         ~subdevice_model();
 
         bool is_there_common_fps() ;
@@ -665,6 +629,7 @@ namespace rs2
         std::shared_ptr<sensor> s;
         device dev;
         tm2_model tm2;
+        std::shared_ptr< atomic_objects_in_frame > detected_objects;
 
         std::map<int, option_model> options_metadata;
         std::vector<std::string> resolutions;
@@ -689,7 +654,8 @@ namespace rs2
         frame_queues queues;
         std::mutex _queue_lock;
         bool _options_invalidated = false;
-        int next_option = RS2_OPTION_COUNT;
+        int next_option = 0;
+        std::vector<rs2_option> supported_options;
         bool streaming = false;
 
         rect normalized_zoom{0, 0, 1, 1};
@@ -712,6 +678,7 @@ namespace rs2
         std::shared_ptr<rs2::colorizer> depth_colorizer;
         std::shared_ptr<rs2::yuy_decoder> yuy2rgb;
         std::shared_ptr<processing_block_model> zero_order_artifact_fix;
+        std::shared_ptr<rs2::depth_huffman_decoder> depth_decoder;
 
         std::vector<std::shared_ptr<processing_block_model>> post_processing;
         bool post_processing_enabled = true;
@@ -722,6 +689,7 @@ namespace rs2
 
     void outline_rect(const rect& r);
     void draw_rect(const rect& r, int line_width = 1);
+
 
     class stream_model
     {
@@ -813,6 +781,8 @@ namespace rs2
             viewer_model& viewer, std::string& error_message);
         void begin_update_unsigned(viewer_model& viewer, std::string& error_message);
 
+        std::shared_ptr< atomic_objects_in_frame > get_detected_objects() const { return _detected_objects; }
+
         std::vector<std::shared_ptr<subdevice_model>> subdevices;
         std::shared_ptr<syncer_model> syncer;
         std::shared_ptr<rs2::asynchronous_syncer> dev_syncer;
@@ -830,8 +800,6 @@ namespace rs2
         bool allow_remove = true;
         bool show_depth_only = false;
         bool show_stream_selection = true;
-        std::map<int, std::array<uint8_t, 6>> controllers;
-        std::set<std::array<uint8_t, 6>> available_controllers;
         std::vector<std::pair<std::string, std::string>> infos;
         std::vector<std::string> restarting_device_info;
         std::set<std::string> advanced_mode_settings_file_names;
@@ -845,7 +813,6 @@ namespace rs2
         int draw_playback_controls(ux_window& window, ImFont* font, viewer_model& view);
         advanced_mode_control amc;
         std::string pretty_time(std::chrono::nanoseconds duration);
-        void draw_controllers_panel(ImFont* font, bool is_device_streaming);
         float draw_device_panel(float panel_width,
                                 ux_window& window,
                                 std::string& error_message,
@@ -869,6 +836,7 @@ namespace rs2
         std::vector<std::shared_ptr<subdevice_model>> live_subdevices;
         periodic_timer      _update_readonly_options_timer;
         bool pause_required = false;
+        std::shared_ptr< atomic_objects_in_frame > _detected_objects;
     };
 
     class viewer_model;
@@ -957,6 +925,7 @@ namespace rs2
         rs2::frameset model;
         std::shared_ptr<processing_block_model> pc_gen;
         rs2::disparity_transform disp_to_depth;
+        rs2::depth_huffman_decoder depth_decoder;
 
         /* Post processing filter rendering */
         std::atomic<bool> render_thread_active; // True when render post processing filter rendering thread is active, False otherwise

@@ -270,7 +270,7 @@ namespace librealsense
                     {
                     case RS_USB2_PID:
                     case RS400_PID:
-                    case RS405_PID:
+                    case RS405U_PID:
                     case RS410_PID:
                     case RS416_PID:
                     case RS460_PID:
@@ -285,6 +285,8 @@ namespace librealsense
                     case RS430_MM_PID:
                     case RS420_MM_PID:
                     case RS435I_PID:
+                    case RS405_PID:
+                    case RS455_PID:
                         found = (result.mi == 6);
                         break;
                     case RS415_PID:
@@ -339,6 +341,8 @@ namespace librealsense
             case 101: return { 3, { 10, 16, 40, 29, 18, 19, 30, 20, 21, 54 } };
             case 102: return { 3, { 9, 10, 16, 40, 29, 18, 19, 30, 20, 21, 54 } };
             case 103: return { 4, { 9, 10, 16, 40, 29, 18, 19, 30, 20, 21, 54 } };
+            case 104: return { 4, { 9, 10, 40, 29, 18, 19, 30, 20, 21, 54 } };
+            case 105: return { 5, { 9, 10, 40, 29, 18, 19, 30, 20, 21, 54 } };
             default:
                 throw std::runtime_error("Unsupported flash version: " + std::to_string(flash_version));
             }

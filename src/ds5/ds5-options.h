@@ -61,20 +61,17 @@ namespace librealsense
 
         float query() const override;
 
-        bool is_enabled() const override { return _is_enabled.load(); }
+        bool is_enabled() const override { return true; }
 
         const char* get_description() const override
         {
             return "Enable/Disable Automatic Motion Data Correction";
         }
 
-        enable_motion_correction(sensor_base* mm_ep,
-                                 std::shared_ptr<librealsense::lazy<rs2_extrinsics>> depth_to_imu,
-                                 const option_range& opt_range);
+        enable_motion_correction(sensor_base* mm_ep, const option_range& opt_range);
 
     private:
-        std::atomic<bool>   _is_enabled;
-        rs2_extrinsics      _depth_to_imu;
+        std::atomic<bool>   _is_active;
     };
 
     class enable_auto_exposure_option : public option_base
@@ -266,6 +263,28 @@ namespace librealsense
         virtual const char* get_description() const override
         {
             return "Alternating Emitter Pattern: 0:disabled(default), 1:enabled( emitter is toggled on/off on per-frame basis)";
+        }
+        virtual void enable_recording(std::function<void(const option &)> record_action) override { _record_action = record_action; }
+
+    private:
+        std::function<void(const option &)> _record_action = [](const option&) {};
+        lazy<option_range> _range;
+        hw_monitor& _hwm;
+        sensor_base* _sensor;
+    };
+
+    class emitter_always_on_option : public option
+    {
+    public:
+        emitter_always_on_option(hw_monitor& hwm, sensor_base* depth_ep);
+        virtual ~emitter_always_on_option() = default;
+        virtual void set(float value) override;
+        virtual float query() const override;
+        virtual option_range get_range() const override;
+        virtual bool is_enabled() const override { return true; }
+        virtual const char* get_description() const override
+        {
+            return "Emitter always on mode: 0:disabled(default), 1:enabled.";
         }
         virtual void enable_recording(std::function<void(const option &)> record_action) override { _record_action = record_action; }
 

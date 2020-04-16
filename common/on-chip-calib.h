@@ -26,6 +26,8 @@ namespace rs2
             : process_manager("On-Chip Calibration"), _model(model),
              _dev(dev), _sub(sub), _viewer(viewer)
         {
+                auto dev_name = dev.get_info(RS2_CAMERA_INFO_NAME);
+                if (!strcmp(dev_name, "Intel RealSense D415")) { speed = 4; }
         }
 
         bool allow_calib_keep() const { return true; }
@@ -53,6 +55,8 @@ namespace rs2
         int accuracy = 2;
         int speed = 3;
         bool tare = false;
+        bool intrinsic_scan = true;
+        bool apply_preset = true;
 
         void calibrate();
 
@@ -115,6 +119,7 @@ namespace rs2
         void draw_content(ux_window& win, int x, int y, float t, std::string& error_message) override;
         void draw_dismiss(ux_window& win, int x, int y) override;
         void draw_expanded(ux_window& win, std::string& error_message) override;
+        void draw_intrinsic_extrinsic(int x, int y);
         int calc_height() override;
         void dismiss(bool snooze) override;
 

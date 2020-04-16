@@ -78,18 +78,20 @@ namespace librealsense
             ds5_color_fourcc_to_rs2_stream);
         color_ep->register_option(RS2_OPTION_GLOBAL_TIME_ENABLED, enable_global_time_option);
 
+        color_ep->register_info(RS2_CAMERA_INFO_PHYSICAL_PORT, color_devices_info.front().device_path);
+
         color_ep->register_pu(RS2_OPTION_BRIGHTNESS);
         color_ep->register_pu(RS2_OPTION_CONTRAST);
         color_ep->register_pu(RS2_OPTION_SATURATION);
         color_ep->register_pu(RS2_OPTION_GAIN);
         color_ep->register_pu(RS2_OPTION_GAMMA);
         color_ep->register_pu(RS2_OPTION_SHARPNESS);
+        color_ep->register_pu(RS2_OPTION_BACKLIGHT_COMPENSATION);
 
         // Currently disabled for certain sensors
         if (!val_in_range(color_devices_info.front().pid, { ds::RS465_PID }))
         {
             color_ep->register_pu(RS2_OPTION_HUE);
-            color_ep->register_pu(RS2_OPTION_BACKLIGHT_COMPENSATION);
             color_ep->register_pu(RS2_OPTION_AUTO_EXPOSURE_PRIORITY);
         }
         // From 5.11.15 auto-exposure priority is supported on the D465

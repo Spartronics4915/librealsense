@@ -168,20 +168,19 @@ namespace librealsense
         if (!is_valid(value))
             throw invalid_value_exception(to_string() << "set(enable_motion_correction) failed! Given value " << value << " is out of range.");
 
-        _is_enabled = value > _opt_range.min;
+        _is_active = value > _opt_range.min;
         _recording_function(*this);
     }
 
     float enable_motion_correction::query() const
     {
-        auto is_enabled = _is_enabled.load();
-        return is_enabled ? _opt_range.max : _opt_range.min;
+        auto is_active = _is_active.load();
+        return is_active ? _opt_range.max : _opt_range.min;
     }
 
     enable_motion_correction::enable_motion_correction(sensor_base* mm_ep,
-                                                       std::shared_ptr<librealsense::lazy<rs2_extrinsics>> depth_to_imu,
                                                        const option_range& opt_range)
-        : option_base(opt_range), _is_enabled(true), _depth_to_imu(**depth_to_imu)
+        : option_base(opt_range), _is_active(true)
     {}
 
     void enable_auto_exposure_option::set(float value)
@@ -473,5 +472,40 @@ namespace librealsense
 
         static std::vector<uint8_t> alt_emitter_name(ds::alternating_emitter_pattern.begin()+2,ds::alternating_emitter_pattern.begin()+22);
         return (alt_emitter_name == res);
+    }
+
+    emitter_always_on_option::emitter_always_on_option(hw_monitor& hwm, sensor_base* ep)
+        : _hwm(hwm), _sensor(ep)
+    {
+        _range = [this]()
+        {
+            return option_range{ 0, 1, 1, 0 };
+        };
+    }
+
+    void emitter_always_on_option::set(float value)
+    {
+        command cmd(ds::LASERONCONST);
+        cmd.param1 = static_cast<int>(value);
+
+        _hwm.send(cmd);
+        _record_action(*this);
+    }
+
+    float emitter_always_on_option::query() const
+    {
+        command cmd(ds::LASERONCONST);
+        cmd.param1 = 2;
+
+        auto res = _hwm.send(cmd);
+        if (res.empty())
+            throw invalid_value_exception("emitter_always_on_option::query result is empty!");
+
+        return (res.front());
+    }
+
+    option_range emitter_always_on_option::get_range() const
+    {
+        return *_range;
     }
 }

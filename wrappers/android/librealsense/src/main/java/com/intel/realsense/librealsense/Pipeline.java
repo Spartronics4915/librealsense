@@ -2,7 +2,12 @@ package com.intel.realsense.librealsense;
 
 public class Pipeline extends LrsClass{
     public Pipeline(){
-        RsContext ctx = new RsContext();
+        try(RsContext ctx = new RsContext()) {
+            mHandle = nCreate(ctx.getHandle());
+        }
+    }
+
+    public Pipeline(RsContext ctx){
         mHandle = nCreate(ctx.getHandle());
     }
 

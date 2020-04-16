@@ -22,13 +22,28 @@
 #include "fw-update-helper.h"
 #include "on-chip-calib.h"
 #include "viewer.h"
+#include "post-processing-filters-list.h"
+#include "post-processing-block-model.h"
 #include <imgui_internal.h>
 #include <time.h>
 
 #include "os.h"
 
+#include "metadata-helper.h"
+
 using namespace rs400;
 using namespace nlohmann;
+
+
+static rs2_sensor_mode resolution_from_width_height(int width, int height)
+{
+    if ((width == 640 && height == 480) || (height == 640 && width == 480))
+        return RS2_SENSOR_MODE_VGA;
+    else if ((width == 1024 && height == 768) || (height == 768 && width == 1024))
+        return RS2_SENSOR_MODE_XGA;
+    else
+        return RS2_SENSOR_MODE_COUNT;
+}
 
 ImVec4 flip(const ImVec4& c)
 {
@@ -820,8 +835,7 @@ namespace rs2
         bool* options_invalidated,
         std::string& error_message)
     {
-
-        for (auto&& i:options->get_supported_options())
+        for (auto&& i: options->get_supported_options())
         {
             auto opt = static_cast<rs2_option>(i);
 
@@ -844,7 +858,7 @@ namespace rs2
         std::shared_ptr<rs2::filter> block,
         std::function<rs2::frame(rs2::frame)> invoker,
         std::string& error_message, bool enable)
-        : _owner(owner), _name(name), _block(block), _invoker(invoker), enabled(enable)
+        : _owner(owner), _name(name), _block(block), _invoker(invoker), _enabled(enable)
     {
         std::stringstream ss;
         ss << "##" << ((owner) ? owner->dev.get_info(RS2_CAMERA_INFO_NAME) : _name)
@@ -856,15 +870,15 @@ namespace rs2
         else
             _full_name = _name;
 
-        enabled = restore_processing_block(_full_name.c_str(),
-                                           block, enabled);
+        _enabled = restore_processing_block(_full_name.c_str(),
+                                            block, _enabled);
 
         populate_options(ss.str().c_str(), owner, owner ? &owner->_options_invalidated : nullptr, error_message);
     }
 
     void processing_block_model::save_to_config_file()
     {
-        save_processing_block_to_config_file(_full_name.c_str(), _block, enabled);
+        save_processing_block_to_config_file(_full_name.c_str(), _block, _enabled);
     }
 
     option_model& processing_block_model::get_option(rs2_option opt)
@@ -890,21 +904,33 @@ namespace rs2
 
     subdevice_model::subdevice_model(
         device& dev,
-        std::shared_ptr<sensor> s, std::string& error_message, viewer_model& viewer)
-        : s(s), dev(dev), tm2(), ui(), last_valid_ui(),
+        std::shared_ptr<sensor> s,
+        std::shared_ptr< atomic_objects_in_frame > device_detected_objects,
+        std::string& error_message,
+        viewer_model& viewer
+    )
+        : s( s ), dev( dev ), tm2(), ui(), last_valid_ui(),
         streaming(false), _pause(false),
         depth_colorizer(std::make_shared<rs2::gl::colorizer>()),
         yuy2rgb(std::make_shared<rs2::gl::yuy_decoder>()),
-        viewer(viewer)
+        depth_decoder(std::make_shared<rs2::depth_huffman_decoder>()),
+        viewer(viewer),
+        detected_objects( device_detected_objects )
     {
+        supported_options = s->get_supported_options();
         restore_processing_block("colorizer", depth_colorizer);
         restore_processing_block("yuy2rgb", yuy2rgb);
 
+        std::string device_name( dev.get_info( RS2_CAMERA_INFO_NAME ));
+        std::string sensor_name( s->get_info( RS2_CAMERA_INFO_NAME ));
+
         std::stringstream ss;
         ss << configurations::viewer::post_processing 
-           << "." << dev.get_info(RS2_CAMERA_INFO_NAME)
-           << "." << s->get_info(RS2_CAMERA_INFO_NAME);
+           << "." << device_name
+           << "." << sensor_name;
         auto key = ss.str();
+
+        bool const is_rgb_camera = s->is< color_sensor >();
 
         if (config_file::instance().contains(key.c_str()))
         {
@@ -953,8 +979,8 @@ namespace rs2
                 this, shared_filter->get_info(RS2_CAMERA_INFO_NAME), shared_filter,
                 [=](rs2::frame f) { return shared_filter->process(f); }, error_message);
 
-            //if (shared_filter->is<disparity_transform>())
-               // model->visible = false;
+            if (shared_filter->is<depth_huffman_decoder>())
+                model->visible = false;
 
             if (is_zo)
             {
@@ -964,20 +990,37 @@ namespace rs2
                     viewer.zo_sensors++;
                 }
                 else
-                    model->enabled = false;
+                    model->enable( false );
             }
 
             if (shared_filter->is<hole_filling_filter>())
-                model->enabled = false;
+                model->enable( false );
 
             if (shared_filter->is<decimation_filter>())
             {
-                std::string sn_name(s->get_info(RS2_CAMERA_INFO_NAME));
-                if (sn_name == "RGB Camera")
-                    model->enabled = false;
+                if( is_rgb_camera )
+                    model->enable( false );
             }
 
             post_processing.push_back(model);
+        }
+
+        if( is_rgb_camera )
+        {
+            for( auto & create_filter : post_processing_filters_list::get() )
+            {
+                auto filter = create_filter();
+                if( !filter )
+                    continue;
+                filter->start( *this );
+                std::shared_ptr< processing_block_model > model(
+                    new post_processing_block_model {
+                        this, filter,
+                        [=]( rs2::frame f ) { return filter->process( f ); },
+                        error_message
+                    } );
+                post_processing.push_back( model );
+            }
         }
 
         auto colorizer = std::make_shared<processing_block_model>(
@@ -989,7 +1032,23 @@ namespace rs2
         ss << "##" << dev.get_info(RS2_CAMERA_INFO_NAME)
             << "/" << s->get_info(RS2_CAMERA_INFO_NAME)
             << "/" << (long long)this;
-        populate_options(options_metadata, ss.str().c_str(), this, s, &_options_invalidated, error_message);
+
+        if (s->supports(RS2_CAMERA_INFO_PHYSICAL_PORT) && dev.supports(RS2_CAMERA_INFO_PRODUCT_LINE))
+        {
+            std::string product = dev.get_info(RS2_CAMERA_INFO_PRODUCT_LINE);
+            std::string id = s->get_info(RS2_CAMERA_INFO_PHYSICAL_PORT);
+
+            bool has_metadata = !rs2::metadata_helper::instance().can_support_metadata(product)
+                || rs2::metadata_helper::instance().is_enabled(id);
+            static bool showed_metadata_prompt = false;
+
+            if (!has_metadata && !showed_metadata_prompt)
+            {
+                auto n = std::make_shared<metadata_warning_model>();
+                viewer.not_model.add_notification(n);
+                showed_metadata_prompt = true;
+            }
+        }
 
         try
         {
@@ -1100,6 +1159,9 @@ namespace rs2
             get_default_selection_index(res_values, resolution_constrain, &selection_index);
             ui.selected_res_id = selection_index;
 
+            if (s->supports(RS2_OPTION_SENSOR_MODE))
+                s->set_option(RS2_OPTION_SENSOR_MODE, resolution_from_width_height(res_values[ui.selected_res_id].first, res_values[ui.selected_res_id].second));
+
             while (ui.selected_res_id >= 0 && !is_selected_combination_supported()) ui.selected_res_id--;
             last_valid_ui = ui;
         }
@@ -1107,6 +1169,8 @@ namespace rs2
         {
             error_message = error_to_string(e);
         }
+        populate_options(options_metadata, ss.str().c_str(), this, s, &_options_invalidated, error_message);
+
     }
 
     subdevice_model::~subdevice_model()
@@ -1193,6 +1257,16 @@ namespace rs2
                     static_cast<int>(res_chars.size())))
                 {
                     res = true;
+                    _options_invalidated = true;
+
+                    if (s->supports(RS2_OPTION_SENSOR_MODE))
+                    {
+                        auto width = res_values[ui.selected_res_id].first;
+                        auto height = res_values[ui.selected_res_id].second;
+                        auto res = resolution_from_width_height(width, height);
+                        if (res >= RS2_SENSOR_MODE_XGA && res < RS2_SENSOR_MODE_COUNT)
+                            s->set_option(RS2_OPTION_SENSOR_MODE, res);
+                    }
                 }
                 ImGui::PopStyleColor();
                 ImGui::PopItemWidth();
@@ -1708,6 +1782,13 @@ namespace rs2
 
         streaming = false;
         _pause = false;
+        
+        if( profiles[0].stream_type() == RS2_STREAM_COLOR )
+        {
+            std::lock_guard< std::mutex > lock( detected_objects->mutex );
+            detected_objects->clear();
+            detected_objects->sensor_is_on = false;
+        }
 
         s->stop();
 
@@ -1754,7 +1835,7 @@ namespace rs2
     //The function decides if specific frame should be sent to the syncer
     bool subdevice_model::is_synchronized_frame(viewer_model& viewer, const frame& f)
     {
-        if(zero_order_artifact_fix && zero_order_artifact_fix->enabled && 
+        if(zero_order_artifact_fix && zero_order_artifact_fix->is_enabled() && 
             (f.get_profile().stream_type() == RS2_STREAM_DEPTH || f.get_profile().stream_type() == RS2_STREAM_INFRARED || f.get_profile().stream_type() == RS2_STREAM_CONFIDENCE))
             return true;
         if (!viewer.is_3d_view || viewer.is_3d_depth_source(f) || viewer.is_3d_texture_source(f))
@@ -1765,7 +1846,7 @@ namespace rs2
 
     void subdevice_model::play(const std::vector<stream_profile>& profiles, viewer_model& viewer, std::shared_ptr<rs2::asynchronous_syncer> syncer)
     {
-        if (post_processing_enabled && zero_order_artifact_fix && zero_order_artifact_fix->enabled)
+        if (post_processing_enabled && zero_order_artifact_fix && zero_order_artifact_fix->is_enabled())
         {
             verify_zero_order_conditions();
         }
@@ -1816,6 +1897,11 @@ namespace rs2
 
         _options_invalidated = true;
         streaming = true;
+        if( s->is< color_sensor >() )
+        {
+            std::lock_guard< std::mutex > lock( detected_objects->mutex );
+            detected_objects->sensor_is_on = true;
+        }
     }
     void subdevice_model::update(std::string& error_message, notifications_model& notifications)
     {
@@ -1829,11 +1915,13 @@ namespace rs2
 
             for (auto&& pbm : post_processing) pbm->save_to_config_file();
         }
-        if (next_option < s->get_supported_options().size())
+
+        if (next_option < supported_options.size())
         {
-            if (options_metadata.find(static_cast<rs2_option>(next_option)) != options_metadata.end())
+            auto next = supported_options[next_option];
+            if (options_metadata.find(static_cast<rs2_option>(next)) != options_metadata.end())
             {
-                auto& opt_md = options_metadata[static_cast<rs2_option>(next_option)];
+                auto& opt_md = options_metadata[static_cast<rs2_option>(next)];
                 opt_md.update_all_fields(error_message, notifications);
 
                 if (next_option == RS2_OPTION_ENABLE_AUTO_EXPOSURE)
@@ -2044,6 +2132,7 @@ namespace rs2
         profile = p;
         texture->colorize = d->depth_colorizer;
         texture->yuy2rgb = d->yuy2rgb;
+        texture->depth_decode = d->depth_decoder;
 
         if (auto vd = p.as<video_stream_profile>())
         {
@@ -2742,7 +2831,7 @@ namespace rs2
             float val{};
             if (texture->try_pick(x, y, &val))
             {
-                ss << ", *p: 0x" << std::hex << static_cast<int>(round(val));
+                ss << " 0x" << std::hex << static_cast<int>(round(val)) << " =";
             }
 
             if (texture->get_last_frame().is<depth_frame>())
@@ -2750,9 +2839,9 @@ namespace rs2
                 auto meters = texture->get_last_frame().as<depth_frame>().get_distance(x, y);
 
                 if (viewer.metric_system)
-                    ss << std::dec << ", " << std::setprecision(2) << meters << " meters";
+                    ss << std::dec << " " << std::setprecision(3) << meters << " meters";
                 else
-                    ss << std::dec << ", " << std::setprecision(2) << meters / FEET_TO_METER << " feet";
+                    ss << std::dec << " " << std::setprecision(3) << meters / FEET_TO_METER << " feet";
             }
 
             std::string msg(ss.str().c_str());
@@ -3286,13 +3375,14 @@ namespace rs2
         : dev(dev),
           syncer(viewer.syncer),
            _update_readonly_options_timer(std::chrono::seconds(6))
+        , _detected_objects( std::make_shared< atomic_objects_in_frame >() )
     {        
         auto name = get_device_name(dev);
         id = to_string() << name.first << ", " << name.second;
 
         for (auto&& sub : dev.query_sensors())
         {
-            auto model = std::make_shared<subdevice_model>(dev, std::make_shared<sensor>(sub), error_message, viewer);
+            auto model = std::make_shared<subdevice_model>(dev, std::make_shared<sensor>(sub), _detected_objects, error_message, viewer);
             subdevices.push_back(model);
         }
 
@@ -3397,7 +3487,7 @@ namespace rs2
                 continue;
 
             for(auto&& pp : sub->post_processing)
-                if (pp->enabled)
+                if (pp->is_enabled())
                     res = pp->invoke(res);
         }
 
@@ -3546,8 +3636,13 @@ namespace rs2
         {
             if(auto depth = viewer.get_3d_depth_source(filtered))
             {
-                if (depth.get_profile().format() == RS2_FORMAT_DISPARITY32)
-                    depth = disp_to_depth.process(depth);
+                switch (depth.get_profile().format())
+                {
+                    case RS2_FORMAT_DISPARITY32: depth = disp_to_depth.process(depth); break;
+                    case RS2_FORMAT_Z16H: depth = depth_decoder.process(depth); break;
+                    default: break;
+                }
+
                 res.push_back(pc->calculate(depth));
             }
             if(auto texture = viewer.get_3d_texture_source(filtered))
@@ -3715,7 +3810,7 @@ namespace rs2
                     fps = s.second.profile.fps();
             }
             auto curr_frame = p.get_position();
-            uint64_t step = 1000.0 / (float)fps * 1e6;
+            uint64_t step = uint64_t( 1000.0 / (float)fps * 1e6 );
             p.seek(std::chrono::nanoseconds(curr_frame - step));
         }
         if (ImGui::IsItemHovered())
@@ -3815,7 +3910,7 @@ namespace rs2
                     fps = s.second.profile.fps();
             }
             auto curr_frame = p.get_position();
-            uint64_t step = 1000.0 / (float)fps * 1e6;
+            uint64_t step = uint64_t( 1000.0 / (float)fps * 1e6 );
             p.seek(std::chrono::nanoseconds(curr_frame + step));
         }
         if (ImGui::IsItemHovered())
@@ -3984,69 +4079,6 @@ namespace rs2
         ImGui::PopStyleColor(5);
         return controls_height + seek_bar_height;
 
-    }
-
-    void device_model::draw_controllers_panel(ImFont* font, bool is_device_streaming)
-    {
-        if (!is_device_streaming)
-        {
-            controllers.clear();
-            available_controllers.clear();
-            return;
-        }
-
-        if (controllers.size() > 0 || available_controllers.size() > 0)
-        {
-            int flags = dev.is<playback>() ? ImGuiButtonFlags_Disabled : 0;
-            ImGui::PushStyleColor(ImGuiCol_Button, sensor_bg);
-            ImGui::PushStyleColor(ImGuiCol_Text, light_grey);
-            ImGui::PushStyleColor(ImGuiCol_PopupBg, almost_white_bg);
-            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, from_rgba(0, 0xae, 0xff, 255));
-            ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, white);
-            ImGui::PushFont(font);
-            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, { 10,0 });
-            const float button_dim = 30.f;
-            for (auto&& c : available_controllers)
-            {
-                ImGui::PushStyleColor(ImGuiCol_Text, white);
-                ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, white);
-                std::string action = "Attach controller";
-                std::string mac = to_string() << (int)c[0] << ":" << (int)c[1] << ":" << (int)c[2] << ":" << (int)c[3] << ":" << (int)c[4] << ":" << (int)c[5];
-                std::string label = to_string() << u8"\uf11b" << "##" << action << mac;
-                if (ImGui::ButtonEx(label.c_str(), { button_dim , button_dim }, flags))
-                {
-                    dev.as<tm2>().connect_controller(c);
-                }
-                if (ImGui::IsItemHovered())
-                {
-                    ImGui::SetTooltip("%s", action.c_str());
-                }
-                ImGui::SameLine();
-                ImGui::Text("%s", mac.c_str());
-                ImGui::PopStyleColor(2);
-            }
-            for (auto&& c : controllers)
-            {
-                ImGui::PushStyleColor(ImGuiCol_Text, light_blue);
-                ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, light_blue);
-                std::string action = "Detach controller";
-                std::string label = to_string() << u8"\uf11b" << "##" << action << c.first;
-                if (ImGui::ButtonEx(label.c_str(), { button_dim , button_dim }, flags))
-                {
-                    dev.as<tm2>().disconnect_controller(c.first);
-                }
-                if (ImGui::IsItemHovered())
-                {
-                    ImGui::SetTooltip("%s", action.c_str());
-                }
-                ImGui::SameLine();
-                ImGui::Text("Controller #%d (connected)", c.first);
-                ImGui::PopStyleColor(2);
-            }
-            ImGui::PopStyleVar();
-            ImGui::PopFont();
-            ImGui::PopStyleColor(5);
-        }
     }
 
     std::vector<std::string> get_device_info(const device& dev, bool include_location)
@@ -4470,7 +4502,7 @@ namespace rs2
 
                     if (auto tm_sensor = dev.first<pose_sensor>())
                     {
-                        if (ImGui::Selectable("Export Localization map", false, is_streaming ? ImGuiSelectableFlags_Disabled : 0))
+                        if (ImGui::Selectable("Export Localization map"))
                         {
                             if (auto target_path = file_dialog_open(save_file, "Tracking device Localization map (RAW)\0*.map\0", NULL, NULL))
                             {
@@ -4489,10 +4521,7 @@ namespace rs2
 
                         if (ImGui::IsItemHovered())
                         {
-                            if (is_streaming)
-                                ImGui::SetTooltip("Stop streaming to Export localization map");
-                            else
-                                ImGui::SetTooltip("Retrieve the localization map from device");
+                            ImGui::SetTooltip("Retrieve the localization map from device");
                         }
 
                         if (ImGui::Selectable("Import Localization map", false, is_streaming ? ImGuiSelectableFlags_Disabled : 0))
@@ -4979,8 +5008,9 @@ namespace rs2
         ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, light_grey);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(5, 5));
         ImGui::PushFont(window.get_font());
+        auto serializable = dev.as<serializable_device>();
 
-        const auto load_json = [&](const std::string f) {
+        const auto load_json = [&, serializable](const std::string f) {
             std::ifstream file(f);
             if (!file.good())
             {
@@ -4990,9 +5020,10 @@ namespace rs2
                 throw std::runtime_error(to_string() << "Failed to read configuration file:\n\"" << f << "\"\nRemoving it from presets.");
             }
             std::string str((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-            if (auto advanced = dev.as<advanced_mode>())
+
+            if (serializable)
             {
-                advanced.load_json(str);
+                serializable.load_json(str);
                 for (auto&& sub : subdevices)
                 {
                     //If json was loaded correctly, we want the presets combo box to show the name of the configuration file
@@ -5015,15 +5046,14 @@ namespace rs2
             viewer.not_model.add_log(to_string() << "Loaded settings from \"" << f << "\"...");
         };
 
-        const auto save_to_json = [&](std::string full_filename)
+        const auto save_to_json = [&, serializable](std::string full_filename)
         {
-            auto advanced = dev.as<advanced_mode>();
             if (!ends_with(to_lower(full_filename), ".json")) full_filename += ".json";
             std::ofstream outfile(full_filename);
             json saved_configuraion;
-            if (auto advanced = dev.as<advanced_mode>())
+            if (serializable)
             {
-                saved_configuraion = json::parse(advanced.serialize_json());
+                saved_configuraion = json::parse(serializable.serialize_json());
             }
             save_viewer_configurations(outfile, saved_configuraion);
             outfile << saved_configuraion.dump(4);
@@ -5098,36 +5128,38 @@ namespace rs2
                         if (ImGui::Combo(opt_model.id.c_str(), &selected, labels.data(),
                             static_cast<int>(labels.size())))
                         {
+                            *opt_model.invalidate_flag = true;
+
                             auto advanced = dev.as<advanced_mode>();
                             if (advanced)
+                                if (!advanced.is_enabled())
+                                    keep_showing_popup = true;
+
+                            if(!keep_showing_popup)
                             {
-                                if (advanced.is_enabled())
+                                if (selected < static_cast<int>(labels.size() - files_labels.size()))
                                 {
-                                    if (selected < static_cast<int>(labels.size() - files_labels.size()))
-                                    {
-                                        //Known preset was chosen
-                                        auto new_val = opt_model.range.min + opt_model.range.step * selected;
-                                        model.add_log(to_string() << "Setting " << opt_model.opt << " to "
-                                            << opt_model.value << " (" << labels[selected] << ")");
+                                    //Known preset was chosen
+                                    auto new_val = opt_model.range.min + opt_model.range.step * selected;
+                                    model.add_log(to_string() << "Setting " << opt_model.opt << " to "
+                                        << opt_model.value << " (" << labels[selected] << ")");
 
-                                        opt_model.endpoint->set_option(opt_model.opt, new_val);
+                                    opt_model.endpoint->set_option(opt_model.opt, new_val);
 
-                                        // Only apply preset to GUI if set_option was succesful
-                                        selected_file_preset = "";
-                                        opt_model.value = new_val;
-                                        is_clicked = true;
-                                    }
-                                    else
-                                    {
-                                        //File was chosen
-                                        auto f = full_files_names[selected - static_cast<int>(labels.size() - files_labels.size())];
-                                        error_message = safe_call([&]() { load_json(f); });
-                                        selected_file_preset = f;
-                                    }
+                                    // Only apply preset to GUI if set_option was succesful
+                                    selected_file_preset = "";
+                                    opt_model.value = new_val;
+                                    is_clicked = true;
                                 }
                                 else
                                 {
-                                    keep_showing_popup = true;
+                                    //File was chosen
+                                    auto file = selected - static_cast<int>(labels.size() - files_labels.size());
+                                    if(file < 0 || file >= full_files_names.size())
+                                        throw std::runtime_error("not a valid format");
+                                    auto f = full_files_names[file];
+                                    error_message = safe_call([&]() { load_json(f); });
+                                    selected_file_preset = f;
                                 }
                             }
                         }
@@ -5157,14 +5189,17 @@ namespace rs2
         const ImVec2 icons_size{ 20, 20 };
         //TODO: Change this once we have support for loading jsons with more data than only advanced controls
         bool is_streaming = std::any_of(subdevices.begin(), subdevices.end(), [](const std::shared_ptr<subdevice_model>& sm) { return sm->streaming; });
-        const int buttons_flags = dev.is<advanced_mode>() ? 0 : ImGuiButtonFlags_Disabled;
+        const int buttons_flags = serializable ? 0 : ImGuiButtonFlags_Disabled;
         static bool require_advanced_mode_enable_prompt = false;
         auto advanced_dev = dev.as<advanced_mode>();
-        bool is_advanced_mode_enabled = false;
+        auto is_advanced_device = false;
+        auto is_advanced_mode_enabled = false;
         if (advanced_dev)
         {
+            is_advanced_device = true;
             is_advanced_mode_enabled = advanced_dev.is_enabled();
         }
+
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 3);
 
         ////////////////////////////////////////
@@ -5176,7 +5211,7 @@ namespace rs2
 
         if (ImGui::ButtonEx(upload_button_name.c_str(), icons_size, (is_streaming && !load_json_if_streaming) ? ImGuiButtonFlags_Disabled : buttons_flags))
         {
-            if (is_advanced_mode_enabled)
+            if (serializable && (!is_advanced_device || is_advanced_mode_enabled))
             {
                 json_loading([&]()
                 {
@@ -5208,7 +5243,7 @@ namespace rs2
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 1); //Align the two icons to buttom
         if (ImGui::ButtonEx(save_button_name.c_str(), icons_size, buttons_flags))
         {
-            if (is_advanced_mode_enabled)
+            if (serializable && (!is_advanced_device || is_advanced_mode_enabled))
             {
                 auto ret = file_dialog_open(save_file, "JavaScript Object Notation (JSON)\0*.json\0", NULL, NULL);
                 if (ret)
@@ -5304,8 +5339,9 @@ namespace rs2
         // draw device header
         ////////////////////////////////////////
         const bool is_playback_device = dev.is<playback>();
+        bool is_ip_device = dev.supports(RS2_CAMERA_INFO_IP_ADDRESS);
         auto header_h = panel_height;
-        if (is_playback_device) header_h += 15;
+        if (is_playback_device || is_ip_device) header_h += 15;
 
         ImColor device_header_background_color = title_color;
         const float left_space = 3.f;
@@ -5337,28 +5373,39 @@ namespace rs2
         std::stringstream ss;
         if(dev.supports(RS2_CAMERA_INFO_NAME))
             ss << dev.get_info(RS2_CAMERA_INFO_NAME);
-        ImGui::Text(" %s", ss.str().c_str());
-        if (dev.supports(RS2_CAMERA_INFO_USB_TYPE_DESCRIPTOR))
+        if(is_ip_device)
         {
-            std::string desc = dev.get_info(RS2_CAMERA_INFO_USB_TYPE_DESCRIPTOR);
-            ss.str("");
-            ss << "   " << textual_icons::usb_type << " " << desc;
-            ImGui::SameLine();
-            if (!starts_with(desc, "3.")) ImGui::PushStyleColor(ImGuiCol_Text, yellow);
-            else ImGui::PushStyleColor(ImGuiCol_Text, light_grey);
-            ImGui::Text(" %s", ss.str().c_str());
-            ImGui::PopStyleColor();
-            ss.str("");
-            ss << "The camera was detected by the OS as connected to a USB " << desc << " port";
+            ImGui::Text(" %s", ss.str().substr(0, ss.str().find("\n IP Device")).c_str());
+
             ImGui::PushFont(window.get_font());
-            ImGui::PushStyleColor(ImGuiCol_Text, light_grey);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip(" %s", ss.str().c_str());
-            ImGui::PopStyleColor();
+            ImGui::Text("\tNetwork Device at %s", dev.get_info(RS2_CAMERA_INFO_IP_ADDRESS));
             ImGui::PopFont();
         }
+        else
+        {
+            ImGui::Text(" %s", ss.str().c_str());
 
-        
+            if (dev.supports(RS2_CAMERA_INFO_USB_TYPE_DESCRIPTOR))
+            {
+                std::string desc = dev.get_info(RS2_CAMERA_INFO_USB_TYPE_DESCRIPTOR);
+                ss.str("");
+                ss << "   " << textual_icons::usb_type << " " << desc;
+                ImGui::SameLine();
+                if (!starts_with(desc, "3.")) ImGui::PushStyleColor(ImGuiCol_Text, yellow);
+                else ImGui::PushStyleColor(ImGuiCol_Text, light_grey);
+                ImGui::Text(" %s", ss.str().c_str());
+                ImGui::PopStyleColor();
+                ss.str("");
+                ss << "The camera was detected by the OS as connected to a USB " << desc << " port";
+                ImGui::PushFont(window.get_font());
+                ImGui::PushStyleColor(ImGuiCol_Text, light_grey);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(" %s", ss.str().c_str());
+                ImGui::PopStyleColor();
+                ImGui::PopFont();
+            }
+        }
+            
         //ImGui::Text(" %s", dev.get_info(RS2_CAMERA_INFO_NAME));
         ImGui::PopFont();
 
@@ -5431,7 +5478,8 @@ namespace rs2
         ////////////////////////////////////////
         // draw advanced mode panel
         ////////////////////////////////////////
-        if (dev.is<advanced_mode>())
+        auto serialize = dev.is<serializable_device>();
+        if (serialize)
         {
             pos = ImGui::GetCursorPos();
             const float vertical_space_before_advanced_mode_control = 10.0f;
@@ -5459,7 +5507,6 @@ namespace rs2
         {
             return sm->streaming;
         });
-        draw_controllers_panel(window.get_font(), is_streaming);
 
         pos = ImGui::GetCursorPos();
 
@@ -5694,7 +5741,7 @@ namespace rs2
                 if (show_stream_selection)
                     sub->draw_stream_selection();
 
-                static const std::vector<rs2_option> drawing_order = dev.is<advanced_mode>() ?
+                static const std::vector<rs2_option> drawing_order = serialize ?
                     std::vector<rs2_option>{                           RS2_OPTION_EMITTER_ENABLED, RS2_OPTION_ENABLE_AUTO_EXPOSURE }
                   : std::vector<rs2_option>{ RS2_OPTION_VISUAL_PRESET, RS2_OPTION_EMITTER_ENABLED, RS2_OPTION_ENABLE_AUTO_EXPOSURE };
 
@@ -5718,7 +5765,7 @@ namespace rs2
                             if (skip_option(opt)) continue;
                             if (std::find(drawing_order.begin(), drawing_order.end(), opt) == drawing_order.end())
                             {
-                                if (dev.is<advanced_mode>() && opt == RS2_OPTION_VISUAL_PRESET)
+                                if (serialize && opt == RS2_OPTION_VISUAL_PRESET)
                                     continue;
                                 if (sub->draw_option(opt, dev.is<playback>() || update_read_only_options, error_message, viewer.not_model))
                                 {
@@ -5789,11 +5836,18 @@ namespace rs2
 
                                 if (ImGui::Button(label.c_str(), { 30,24 }))
                                 {
-                                    if (sub->zero_order_artifact_fix && sub->zero_order_artifact_fix->enabled)
+                                    if (sub->zero_order_artifact_fix && sub->zero_order_artifact_fix->is_enabled())
                                         sub->verify_zero_order_conditions();
                                     sub->post_processing_enabled = true;
                                     config_file::instance().set(get_device_sensor_name(sub.get()).c_str(),
                                         sub->post_processing_enabled);
+                                    for( auto&& pb : sub->post_processing )
+                                    {
+                                        if( !pb->visible )
+                                            continue;
+                                        if( pb->is_enabled() )
+                                            pb->processing_block_enable_disable( true );
+                                    }
                                 }
                                 if (ImGui::IsItemHovered())
                                 {
@@ -5812,6 +5866,13 @@ namespace rs2
                                     sub->post_processing_enabled = false;
                                     config_file::instance().set(get_device_sensor_name(sub.get()).c_str(),
                                         sub->post_processing_enabled);
+                                    for( auto&& pb : sub->post_processing )
+                                    {
+                                        if( !pb->visible )
+                                            continue;
+                                        if( pb->is_enabled() )
+                                            pb->processing_block_enable_disable( false );
+                                    }
                                 }
                                 if (ImGui::IsItemHovered())
                                 {
@@ -5857,7 +5918,7 @@ namespace rs2
 
                                     if (!sub->post_processing_enabled)
                                     {
-                                        if (!pb->enabled)
+                                        if (!pb->is_enabled())
                                         {
                                             std::string label = to_string() << " " << textual_icons::toggle_off << "##" << id << "," << sub->s->get_info(RS2_CAMERA_INFO_NAME) << "," << pb->get_name();
 
@@ -5875,7 +5936,7 @@ namespace rs2
                                     }
                                     else
                                     {
-                                        if (!pb->enabled)
+                                        if (!pb->is_enabled())
                                         {
                                             std::string label = to_string() << " " << textual_icons::toggle_off << "##" << id << "," << sub->s->get_info(RS2_CAMERA_INFO_NAME) << "," << pb->get_name();
 
@@ -5886,7 +5947,7 @@ namespace rs2
                                             {
                                                 if (pb->get_block()->is<zero_order_invalidation>())
                                                     sub->verify_zero_order_conditions();
-                                                pb->enabled = true;
+                                                pb->enable( true );
                                                 pb->save_to_config_file();
                                             }
                                             if (ImGui::IsItemHovered())
@@ -5904,7 +5965,7 @@ namespace rs2
 
                                                 if (ImGui::Button(label.c_str(), { 25,24 }))
                                                 {
-                                                    pb->enabled = false;
+                                                    pb->enable( false );
                                                     pb->save_to_config_file();
                                                 }
                                                 if (ImGui::IsItemHovered())
@@ -5983,28 +6044,6 @@ namespace rs2
     void device_model::handle_hardware_events(const std::string& serialized_data)
     {
         //TODO: Move under hour glass
-        std::string event_type = get_event_type(serialized_data);
-        if (event_type == "Controller Event")
-        {
-            std::string subtype = get_subtype(serialized_data);
-            if (subtype == "Connection")
-            {
-                std::array<uint8_t, 6> mac_addr = get_mac(serialized_data);
-                int id = get_id(serialized_data);
-                controllers[id] = mac_addr;
-                available_controllers.erase(mac_addr);
-            }
-            else if (subtype == "Discovery")
-            {
-                std::array<uint8_t, 6> mac_addr = get_mac(serialized_data);
-                available_controllers.insert(mac_addr);
-            }
-            else if (subtype == "Disconnection")
-            {
-                int id = get_id(serialized_data);
-                controllers.erase(id);
-            }
-        }
     }
 
     device_changes::device_changes(rs2::context& ctx)
@@ -6031,15 +6070,6 @@ namespace rs2
         removed_and_connected = std::move(_changes.front());
         _changes.pop();
         return true;
-    }
-    void tm2_model::draw_controller_pose_object()
-    {
-        const float sphere_radius = 0.02f;
-        const float controller_height = 0.2f;
-        //TODO: Draw controller holder as cylinder
-        texture_buffer::draw_circle(1, 0, 0, 0, 1, 0, sphere_radius, { 0.0, controller_height + sphere_radius, 0.0 }, 1.0f);
-        texture_buffer::draw_circle(0, 1, 0, 0, 0, 1, sphere_radius, { 0.0, controller_height + sphere_radius, 0.0 }, 1.0f);
-        texture_buffer::draw_circle(1, 0, 0, 0, 0, 1, sphere_radius, { 0.0, controller_height + sphere_radius, 0.0 }, 1.0f);
     }
 
     // Aggregate the trajectory path

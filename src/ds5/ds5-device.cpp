@@ -34,6 +34,7 @@
 #include "proc/syncer-processing-block.h"
 #include "proc/hole-filling-filter.h"
 #include "proc/depth-formats-converter.h"
+#include "proc/depth-decompress.h"
 #include "../common/fw/firmware-version.h"
 #include "fw-update/fw-update-unsigned.h"
 #include "../third-party/json.hpp"
@@ -50,6 +51,7 @@ namespace librealsense
         {rs_fourcc('Y','1','6',' '), RS2_FORMAT_Y16},
         {rs_fourcc('Y','1','2','I'), RS2_FORMAT_Y12I},
         {rs_fourcc('Z','1','6',' '), RS2_FORMAT_Z16},
+        {rs_fourcc('Z','1','6','H'), RS2_FORMAT_Z16H},
         {rs_fourcc('R','G','B','2'), RS2_FORMAT_BGR8}
         
     };
@@ -64,6 +66,7 @@ namespace librealsense
         {rs_fourcc('Y','1','2','I'), RS2_STREAM_INFRARED},
         {rs_fourcc('R','G','B','2'), RS2_STREAM_INFRARED},
         {rs_fourcc('Z','1','6',' '), RS2_STREAM_DEPTH},
+        {rs_fourcc('Z','1','6','H'), RS2_STREAM_DEPTH}
     };
 
     ds5_auto_exposure_roi_method::ds5_auto_exposure_roi_method(
@@ -187,7 +190,7 @@ namespace librealsense
 
         sector_count += first_sector;
 
-        for (size_t sector_index = first_sector; sector_index < sector_count; sector_index++)
+        for (int sector_index = first_sector; sector_index < sector_count; sector_index++)
         {
             command cmdFES(ds::FES);
             cmdFES.require_response = false;
@@ -219,7 +222,7 @@ namespace librealsense
         update_progress_callback_ptr callback, float continue_from, float ratio)
     {
         auto first_table_offset = fs.tables.front().offset;
-        float total_size = fs.app_size + tables_size;
+        float total_size = float(fs.app_size + tables_size);
 
         float app_ratio = fs.app_size / total_size * ratio;
         float tables_ratio = tables_size / total_size * ratio;
@@ -237,7 +240,7 @@ namespace librealsense
         // update read-write section
         auto first_table_offset = flash_image_info.read_write_section.tables.front().offset;
         auto tables_size = flash_image_info.header.read_write_start_address + flash_image_info.header.read_write_size - first_table_offset;
-        update_section(hwm, merged_image, flash_image_info.read_write_section, tables_size, callback, 0, update_mode == RS2_UNSIGNED_UPDATE_MODE_READ_ONLY ? 0.5 : 1.0);
+        update_section(hwm, merged_image, flash_image_info.read_write_section, tables_size, callback, 0, update_mode == RS2_UNSIGNED_UPDATE_MODE_READ_ONLY ? 0.5f : 1.0f);
 
         if (update_mode == RS2_UNSIGNED_UPDATE_MODE_READ_ONLY)
         {
@@ -551,6 +554,9 @@ namespace librealsense
         raw_depth_ep->register_xu(depth_xu); // make sure the XU is initialized every time we power the camera
 
         auto depth_ep = std::make_shared<ds5_depth_sensor>(this, raw_depth_ep);
+
+        depth_ep->register_info(RS2_CAMERA_INFO_PHYSICAL_PORT, filter_by_mi(all_device_infos, 0).front().device_path);
+
         depth_ep->register_option(RS2_OPTION_GLOBAL_TIME_ENABLED, enable_global_time_option);
 
         depth_ep->register_processing_block(processing_block_factory::create_id_pbf(RS2_FORMAT_Y8, RS2_STREAM_INFRARED, 1));
@@ -565,11 +571,11 @@ namespace librealsense
     ds5_device::ds5_device(std::shared_ptr<context> ctx,
         const platform::backend_device_group& group)
         : device(ctx, group), global_time_interface(),
-        auto_calibrated(_hw_monitor),
-        _depth_stream(new stream(RS2_STREAM_DEPTH)),
-        _left_ir_stream(new stream(RS2_STREAM_INFRARED, 1)),
-        _right_ir_stream(new stream(RS2_STREAM_INFRARED, 2)),
-        _device_capabilities(ds::d400_caps::CAP_UNDEFINED)
+          auto_calibrated(_hw_monitor),
+          _device_capabilities(ds::d400_caps::CAP_UNDEFINED),
+          _depth_stream(new stream(RS2_STREAM_DEPTH)),
+          _left_ir_stream(new stream(RS2_STREAM_INFRARED, 1)),
+          _right_ir_stream(new stream(RS2_STREAM_INFRARED, 2))
     {
         _depth_device_idx = add_sensor(create_depth_device(ctx, group.uvc_devices));
         init(ctx, group);
@@ -651,6 +657,11 @@ namespace librealsense
                 usb_type_str = usb_spec_names.at(_usb_mode);
             else  // Backend fails to provide USB descriptor  - occurs with RS3 build. Requires further work
                 usb_modality = false;
+        }
+
+        if (_fw_version >= firmware_version("5.12.1.1"))
+        {
+            depth_sensor.register_processing_block(processing_block_factory::create_id_pbf(RS2_FORMAT_Z16H, RS2_STREAM_DEPTH));
         }
 
         if (advanced_mode && (_usb_mode >= usb3_type))
@@ -747,6 +758,11 @@ namespace librealsense
             _fw_version.experimental()) // Not yet available in production firmware
         {
             depth_sensor.register_option(RS2_OPTION_EMITTER_ON_OFF, std::make_shared<emitter_on_and_off_option>(*_hw_monitor, &raw_depth_sensor));
+        }
+
+        if ((_fw_version >= firmware_version("5.12.1.0")) && ((_device_capabilities & d400_caps::CAP_GLOBAL_SHUTTER) == d400_caps::CAP_GLOBAL_SHUTTER))
+        {
+            depth_sensor.register_option(RS2_OPTION_EMITTER_ALWAYS_ON, std::make_shared<emitter_always_on_option>(*_hw_monitor, &depth_sensor));
         }
 
         if (_fw_version >= firmware_version("5.9.15.1"))
@@ -885,7 +901,12 @@ namespace librealsense
         //{
         //    throw not_implemented_exception("device time not supported for backend.");
         //}
-
+        
+#ifdef RASPBERRY_PI
+        // TODO: This is temporary work-around since global timestamp seems to compromise RPi stability
+        using namespace std::chrono;
+        return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+#else
         if (!_hw_monitor)
             throw wrong_api_call_sequence_exception("_hw_monitor is not initialized yet");
 
@@ -900,6 +921,7 @@ namespace librealsense
         uint32_t dt = *(uint32_t*)res.data();
         double ts = dt * TIMESTAMP_USEC_TO_MSEC;
         return ts;
+#endif
     }
 
     std::shared_ptr<synthetic_sensor> ds5u_device::create_ds5u_depth_device(std::shared_ptr<context> ctx,
@@ -924,7 +946,6 @@ namespace librealsense
 
         raw_depth_ep->register_xu(depth_xu); // make sure the XU is initialized every time we power the camera
 
-        depth_ep->register_processing_block(processing_block_factory::create_id_pbf(RS2_FORMAT_Z16, RS2_STREAM_DEPTH));
         depth_ep->register_processing_block({ {RS2_FORMAT_W10} }, { {RS2_FORMAT_RAW10, RS2_STREAM_INFRARED, 1} }, []() { return std::make_shared<w10_converter>(RS2_FORMAT_RAW10); });
         depth_ep->register_processing_block({ {RS2_FORMAT_W10} }, { {RS2_FORMAT_Y10BPACK, RS2_STREAM_INFRARED, 1} }, []() { return std::make_shared<w10_converter>(RS2_FORMAT_Y10BPACK); });
 

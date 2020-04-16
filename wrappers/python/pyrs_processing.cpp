@@ -12,6 +12,8 @@ void init_processing(py::module &m) {
     frame_source.def("allocate_video_frame", &rs2::frame_source::allocate_video_frame, "Allocate a new video frame with given params",
                      "profile"_a, "original"_a, "new_bpp"_a = 0, "new_width"_a = 0,
                      "new_height"_a = 0, "new_stride"_a = 0, "frame_type"_a = RS2_EXTENSION_VIDEO_FRAME)
+        .def("allocate_motion_frame", &rs2::frame_source::allocate_motion_frame, "Allocate a new motion frame with given params",
+            "profile"_a, "original"_a, "frame_type"_a = RS2_EXTENSION_MOTION_FRAME)
         .def("allocate_points", &rs2::frame_source::allocate_points, "profile"_a,
              "original"_a) // No docstring in C++
         .def("allocate_composite_frame", &rs2::frame_source::allocate_composite_frame,
@@ -68,6 +70,7 @@ void init_processing(py::module &m) {
         .def(BIND_DOWNCAST(filter, temporal_filter))
         .def(BIND_DOWNCAST(filter, threshold_filter))
         .def(BIND_DOWNCAST(filter, zero_order_invalidation))
+        .def(BIND_DOWNCAST(filter, depth_huffman_decoder))
         .def("__nonzero__", &rs2::filter::operator bool); // No docstring in C++
         // get_queue?
         // is/as?
@@ -169,6 +172,8 @@ void init_processing(py::module &m) {
              "1 - farest_from_around - Use the value from the neighboring pixel which is furthest away from the sensor\n"
              "2 - nearest_from_around - -Use the value from the neighboring pixel closest to the sensor", "mode"_a);
 
+    py::class_<rs2::depth_huffman_decoder, rs2::filter> depth_huffman_decoder(m, "depth_huffman_decoder", "Decompresses Huffman-encoded Depth frame to standartized Z16 format");
+    depth_huffman_decoder.def(py::init<>());
     // rs2::rates_printer
     /** end rs_processing.hpp **/
 }
